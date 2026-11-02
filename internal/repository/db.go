@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"iter"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -126,19 +127,13 @@ func (s *DBStorage) CreateOrder(ctx context.Context, userID int64, number string
 }
 
 // новые заказы идут первыми
-func (s *DBStorage) GetOrders(ctx context.Context, userID int64) ([]models.Order, error) {
-	rows, err := s.pool.Query(
+func (s *DBStorage) GetOrders(ctx context.Context, userID int64) iter.Seq2[models.Order, error] {
+	return s.orders(
 		ctx,
 		`SELECT number, user_id, status, accrual::text, uploaded_at FROM orders
 		 WHERE user_id = $1 ORDER BY uploaded_at DESC, number DESC`,
 		userID,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	return scanOrders(rows)
 }
 
 // остаток и сумма всех списаний
@@ -229,21 +224,23 @@ func (s *DBStorage) GetWithdrawals(ctx context.Context, userID int64) ([]models.
 	return withdrawals, nil
 }
 
-// заказы ещё без окончательного расчёта
-func (s *DBStorage) GetPendingOrders(ctx context.Context) ([]models.Order, error) {
-	rows, err := s.pool.Query(
+// не больше ста заказов после последнего просмотренного
+func (s *DBStorage) GetPendingOrders(ctx context.Context, after models.Order, limit int) iter.Seq2[models.Order, error] {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	return s.orders(
 		ctx,
 		`SELECT number, user_id, status, accrual::text, uploaded_at FROM orders
-		 WHERE status IN ($1, $2) ORDER BY uploaded_at, number`,
+		 WHERE status IN ($1, $2)
+		 AND ($3 = '' OR (uploaded_at, number) > ($4, $3))
+		 ORDER BY uploaded_at, number LIMIT $5`,
 		models.New,
 		models.Processing,
+		after.Number,
+		after.UploadedAt,
+		limit,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	return scanOrders(rows)
 }
 
 // блокировка заказа защищает от двойного начисления
@@ -312,20 +309,28 @@ func (s *DBStorage) UpdateOrder(ctx context.Context, number, status string, accr
 	return tx.Commit(ctx)
 }
 
-func scanOrders(rows pgx.Rows) ([]models.Order, error) {
-	var orders []models.Order
-	for rows.Next() {
-		var order models.Order
-
-		if err := rows.Scan(&order.Number, &order.UserID, &order.Status, &order.Accrual, &order.UploadedAt); err != nil {
-			return nil, err
+func (s *DBStorage) orders(ctx context.Context, query string, args ...any) iter.Seq2[models.Order, error] {
+	return func(yield func(models.Order, error) bool) {
+		rows, err := s.pool.Query(ctx, query, args...)
+		if err != nil {
+			yield(models.Order{}, err)
+			return
 		}
-		orders = append(orders, order)
-	}
+		defer rows.Close()
 
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
+		for rows.Next() {
+			var order models.Order
+			if err := rows.Scan(&order.Number, &order.UserID, &order.Status, &order.Accrual, &order.UploadedAt); err != nil {
+				yield(models.Order{}, err)
+				return
+			}
+			if !yield(order, nil) {
+				return
+			}
+		}
 
-	return orders, nil
+		if err := rows.Err(); err != nil {
+			yield(models.Order{}, err)
+		}
+	}
 }
