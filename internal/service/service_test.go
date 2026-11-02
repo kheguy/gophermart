@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"iter"
 	"testing"
 
 	models "github.com/kheguy/gophermart/internal/model"
@@ -28,9 +29,18 @@ func (s *storageMock) CreateOrder(ctx context.Context, userID int64, number stri
 	return s.Called(ctx, userID, number).Error(0)
 }
 
-func (s *storageMock) GetOrders(ctx context.Context, userID int64) ([]models.Order, error) {
+func (s *storageMock) GetOrders(ctx context.Context, userID int64) iter.Seq2[models.Order, error] {
 	args := s.Called(ctx, userID)
-	return args.Get(0).([]models.Order), args.Error(1)
+	return func(yield func(models.Order, error) bool) {
+		for _, order := range args.Get(0).([]models.Order) {
+			if !yield(order, nil) {
+				return
+			}
+		}
+		if err := args.Error(1); err != nil {
+			yield(models.Order{}, err)
+		}
+	}
 }
 
 func (s *storageMock) GetBalance(ctx context.Context, userID int64) (models.Balance, error) {
@@ -184,7 +194,11 @@ func TestGetUserData(t *testing.T) {
 		storage.On("GetWithdrawals", ctx, int64(1)).Return(withdrawals, storageErr).Once()
 		svc := MakeNewLoyaltyService(storage)
 		gotOrders, err := svc.GetOrders(ctx, 1)
-		assert.Equal(t, orders, gotOrders)
+		if storageErr == nil {
+			assert.Equal(t, orders, gotOrders)
+		} else {
+			assert.Empty(t, gotOrders)
+		}
 		assert.ErrorIs(t, err, storageErr)
 		gotBalance, err := svc.GetBalance(ctx, 1)
 		assert.Equal(t, balance, gotBalance)

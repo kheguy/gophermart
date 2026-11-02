@@ -1,10 +1,9 @@
 package middlewares
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
-
-	"go.uber.org/zap"
 )
 
 type responseData struct {
@@ -55,12 +54,12 @@ func WithLogging(next http.Handler) http.Handler {
 			data.status = http.StatusOK
 		}
 
-		zap.L().Info("request",
-			zap.String("uri", req.RequestURI),
-			zap.String("method", req.Method),
-			zap.Int("status", data.status),
-			zap.Duration("duration", time.Since(start)),
-			zap.Int("size", data.size),
+		slog.Info("request",
+			"method", req.Method,
+			"uri", req.RequestURI,
+			"status", data.status,
+			"duration", time.Since(start),
+			"size", data.size,
 		)
 	})
 }

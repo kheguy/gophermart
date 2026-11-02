@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"errors"
+	"iter"
 	"strings"
 
 	models "github.com/kheguy/gophermart/internal/model"
@@ -18,7 +19,7 @@ type Storage interface {
 	// повтор от владельца не новый заказ
 	CreateOrder(ctx context.Context, userID int64, number string) error
 	// сначала недавно загруженные заказы
-	GetOrders(ctx context.Context, userID int64) ([]models.Order, error)
+	GetOrders(ctx context.Context, userID int64) iter.Seq2[models.Order, error]
 	// списанная сумма считается за всё время
 	GetBalance(ctx context.Context, userID int64) (models.Balance, error)
 	// баланса должно хватить на всю сумму
@@ -88,7 +89,14 @@ func (s *LoyaltyService) UploadOrder(ctx context.Context, userID int64, number s
 
 // заказы без начисления тоже видны
 func (s *LoyaltyService) GetOrders(ctx context.Context, userID int64) ([]models.Order, error) {
-	return s.storage.GetOrders(ctx, userID)
+	var orders []models.Order
+	for order, err := range s.storage.GetOrders(ctx, userID) {
+		if err != nil {
+			return nil, err
+		}
+		orders = append(orders, order)
+	}
+	return orders, nil
 }
 
 // остаток не включает уже списанные баллы

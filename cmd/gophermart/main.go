@@ -5,13 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
-
-	"go.uber.org/zap"
 
 	"github.com/kheguy/gophermart/internal/accrual"
 	"github.com/kheguy/gophermart/internal/auth"
@@ -23,25 +22,22 @@ import (
 )
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	slog.SetDefault(logger)
+
 	cfg, err := config.LoadServer()
 	// TODO мб тексты вынести
 	if err != nil {
-		log.Fatal("Config loading error: ", err)
+		slog.Error("Config loading error", "error", err)
+		os.Exit(1)
 	}
-
-	logger, err := zap.NewProduction()
-	if err != nil {
-		log.Fatal("Logger initialization error: ", err)
-	}
-
-	defer func() { _ = logger.Sync() }()
-	zap.ReplaceGlobals(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	if err := run(ctx, cfg); err != nil {
-		log.Fatal(err)
+		slog.Error("Server error", "address", cfg.Address, "error", err)
+		os.Exit(1)
 	}
 }
 
@@ -90,7 +86,7 @@ func run(ctx context.Context, cfg config.ServerConfig) error {
 
 	serverErrors := make(chan error, 1)
 	go func() {
-		log.Printf("Server started on %s", cfg.Address)
+		slog.Info("Server started", "address", cfg.Address)
 		serverErrors <- server.ListenAndServe()
 	}()
 
@@ -98,9 +94,10 @@ func run(ctx context.Context, cfg config.ServerConfig) error {
 	select {
 	case serverErr = <-serverErrors:
 	case <-ctx.Done():
+		slog.Info("Server shutting down", "address", cfg.Address)
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Server shutdown error: %v", err)
+			slog.Error("Server shutdown error", "address", cfg.Address, "error", err)
 			_ = server.Close()
 		}
 		cancelShutdown()
@@ -114,5 +111,6 @@ func run(ctx context.Context, cfg config.ServerConfig) error {
 		return serverErr
 	}
 
+	slog.Info("Server stopped", "address", cfg.Address)
 	return nil
 }
